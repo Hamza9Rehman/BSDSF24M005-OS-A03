@@ -1,5 +1,52 @@
 #include "shell.h"
 
+static char* history[HISTORY_SIZE];
+static int history_count = 0;
+
+void add_to_history(const char* cmd) {
+    if (cmd == NULL) return;
+
+    // Skip whitespace-only commands
+    const char* p = cmd;
+    while (*p == ' ' || *p == '\t' || *p == '\n') p++;
+    if (*p == '\0') return;
+
+    // If history is full, free the oldest entry and shift left
+    if (history_count == HISTORY_SIZE) {
+        free(history[0]);
+        for (int i = 1; i < HISTORY_SIZE; i++) {
+            history[i - 1] = history[i];
+        }
+        history_count--;
+    }
+
+    history[history_count] = strdup(cmd);
+    if (history[history_count] != NULL) {
+        history_count++;
+    }
+}
+
+void print_history(void) {
+    for (int i = 0; i < history_count; i++) {
+        printf("%d  %s\n", i + 1, history[i]);
+    }
+}
+
+char* get_history_command(int index) {
+    if (index < 1 || index > history_count) {
+        return NULL;
+    }
+    return strdup(history[index - 1]);
+}
+
+void free_history(void) {
+    for (int i = 0; i < history_count; i++) {
+        free(history[i]);
+        history[i] = NULL;
+    }
+    history_count = 0;
+}
+
 char* read_cmd(char* prompt, FILE* fp) {
     printf("%s", prompt);
     char* cmdline = (char*) malloc(sizeof(char) * MAX_LEN);
@@ -68,6 +115,7 @@ int handle_builtin(char** arglist) {
 
     // 1. exit: Terminates the shell gracefully
     if (strcmp(arglist[0], "exit") == 0) {
+        free_history();
         printf("Exiting shell...\n");
         exit(0);
     }
@@ -90,11 +138,19 @@ int handle_builtin(char** arglist) {
         printf("  cd <directory>  : Change the current working directory\n");
         printf("  exit            : Exit the shell\n");
         printf("  help            : Display this help message\n");
+        printf("  history         : Display command history\n");
+        printf("  !n              : Re-execute the n-th command from history\n");
         printf("  jobs            : Display background jobs\n");
         return 1;
     }
 
-    // 4. jobs: Placeholder for Feature-6
+    // 4. history: Displays stored command history
+    if (strcmp(arglist[0], "history") == 0) {
+        print_history();
+        return 1;
+    }
+
+    // 5. jobs: Placeholder for Feature-6
     if (strcmp(arglist[0], "jobs") == 0) {
         printf("Job control not yet implemented.\n");
         return 1;
