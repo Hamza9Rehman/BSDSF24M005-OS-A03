@@ -4,7 +4,10 @@ int main() {
     char* cmdline;
     char** arglist;
 
-    while ((cmdline = read_cmd(PROMPT, stdin)) != NULL) {
+    // Bind Tab key to Readline's default completion behavior
+    rl_bind_key('\t', rl_complete);
+
+    while ((cmdline = readline(PROMPT)) != NULL) {
         // Skip leading whitespace when checking for !n
         char* trimmed = cmdline;
         while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
@@ -14,7 +17,6 @@ int main() {
             char* endptr;
             long n = strtol(trimmed + 1, &endptr, 10);
 
-            // Ensure there are digits after '!' and no trailing garbage
             while (*endptr == ' ' || *endptr == '\t') endptr++;
             if (trimmed[1] == '\0' || !isdigit((unsigned char)trimmed[1]) || *endptr != '\0') {
                 fprintf(stderr, "history: invalid event specification '%s'\n", trimmed);
@@ -29,13 +31,18 @@ int main() {
                 continue;
             }
 
-            printf("%s\n", recalled); // Echo the resolved command
+            printf("%s\n", recalled);
             free(cmdline);
             cmdline = recalled;
+            trimmed = cmdline;
+            while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
         }
 
-        // Record non-empty command in history
-        add_to_history(cmdline);
+        // Record non-empty command in both Readline history and internal history
+        if (*trimmed != '\0') {
+            add_history(cmdline);
+            add_to_history(cmdline);
+        }
 
         if ((arglist = tokenize(cmdline)) != NULL) {
             // Check built-ins first before forking an external process
@@ -53,6 +60,7 @@ int main() {
     }
 
     free_history();
+    clear_history();
     printf("\nShell exited.\n");
     return 0;
 }

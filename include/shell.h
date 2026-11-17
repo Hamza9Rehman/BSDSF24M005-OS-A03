@@ -9,6 +9,8 @@
 #include <sys/wait.h>
 #include <errno.h>
 #include <ctype.h>
+#include <readline/readline.h>
+#include <readline/history.h>
 
 #define MAX_LEN 512
 #define MAXARGS 10
@@ -17,7 +19,6 @@
 #define PROMPT "FCIT> "
 
 // Core shell prototypes
-char* read_cmd(char* prompt, FILE* fp);
 char** tokenize(char* cmdline);
 int execute(char** arglist);
 int handle_builtin(char** arglist);

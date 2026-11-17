@@ -1,6 +1,6 @@
 CC = gcc
 CFLAGS = -Wall -Wextra -g -Iinclude
-LDFLAGS = 
+LDFLAGS = -lreadline
 
 # Directories
 SRC_DIR = src
