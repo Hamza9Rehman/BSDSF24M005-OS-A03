@@ -16,20 +16,36 @@
 #define MAX_LEN 512
 #define MAXARGS 32
 #define HISTORY_SIZE 20
+#define MAX_JOBS 64
 #define PROMPT "FCIT> "
 
-// Represents a single command with optional I/O redirections
+// Represents a single command with optional I/O redirections and background flag
 typedef struct {
     char* args[MAXARGS + 1];
     char* infile;
     char* outfile;
+    int background;
 } Command;
+
+// Represents an active background job
+typedef struct {
+    int job_id;
+    pid_t pid;
+    char* cmd;
+    int active;
+} Job;
 
 // Core shell prototypes
 int parse_and_execute_line(char* cmdline);
-int execute_single(Command* cmd);
-int execute_pipe(Command* left, Command* right);
+int execute_single(Command* cmd, const char* raw_cmd);
+int execute_pipe(Command* left, Command* right, int background, const char* raw_cmd);
 int handle_builtin(char** arglist);
+
+// Job control prototypes
+void add_job(pid_t pid, const char* cmd);
+void reap_zombies(void);
+void print_jobs(void);
+void free_jobs(void);
 
 // History prototypes
 void add_to_history(const char* cmd);

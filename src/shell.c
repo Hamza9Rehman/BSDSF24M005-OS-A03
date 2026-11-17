@@ -3,6 +3,82 @@
 static char* history[HISTORY_SIZE];
 static int history_count = 0;
 
+static Job jobs_list[MAX_JOBS];
+static int next_job_id = 1;
+
+/* ==================== JOB CONTROL FUNCTIONS ==================== */
+
+void add_job(pid_t pid, const char* cmd) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (!jobs_list[i].active) {
+            jobs_list[i].job_id = next_job_id++;
+            jobs_list[i].pid = pid;
+            jobs_list[i].cmd = strdup(cmd ? cmd : "");
+            jobs_list[i].active = 1;
+            printf("[%d] %d\n", jobs_list[i].job_id, pid);
+            return;
+        }
+    }
+    fprintf(stderr, "jobs: maximum background job limit reached\n");
+}
+
+void reap_zombies(void) {
+    int status;
+    pid_t pid;
+
+    // Non-blocking loop to reap all terminated background children
+    while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
+        for (int i = 0; i < MAX_JOBS; i++) {
+            if (jobs_list[i].active && jobs_list[i].pid == pid) {
+                printf("\n[%d] Done\t\t%s\n", jobs_list[i].job_id, jobs_list[i].cmd);
+                free(jobs_list[i].cmd);
+                jobs_list[i].cmd = NULL;
+                jobs_list[i].active = 0;
+                break;
+            }
+        }
+    }
+
+    // Reset job ID counter if no active background jobs remain
+    int any_active = 0;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs_list[i].active) {
+            any_active = 1;
+            break;
+        }
+    }
+    if (!any_active) {
+        next_job_id = 1;
+    }
+}
+
+void print_jobs(void) {
+    reap_zombies();
+    int found = 0;
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs_list[i].active) {
+            printf("[%d] Running\tPID: %d\t%s\n",
+                   jobs_list[i].job_id, jobs_list[i].pid, jobs_list[i].cmd);
+            found = 1;
+        }
+    }
+    if (!found) {
+        printf("No active background jobs.\n");
+    }
+}
+
+void free_jobs(void) {
+    for (int i = 0; i < MAX_JOBS; i++) {
+        if (jobs_list[i].active) {
+            free(jobs_list[i].cmd);
+            jobs_list[i].cmd = NULL;
+            jobs_list[i].active = 0;
+        }
+    }
+}
+
+/* ==================== HISTORY FUNCTIONS ==================== */
+
 void add_to_history(const char* cmd) {
     if (cmd == NULL) return;
 
@@ -45,7 +121,8 @@ void free_history(void) {
     history_count = 0;
 }
 
-// Inserts spaces around '<', '>', and '|' so attached syntax like "ls>out.txt" parses cleanly
+/* ==================== PARSING & EXECUTION ==================== */
+
 static char* pad_operators(const char* line) {
     size_t len = strlen(line);
     char* padded = (char*)malloc(len * 3 + 1);
@@ -71,6 +148,7 @@ static void init_command(Command* cmd) {
     }
     cmd->infile = NULL;
     cmd->outfile = NULL;
+    cmd->background = 0;
 }
 
 static void free_command(Command* cmd) {
@@ -84,7 +162,6 @@ static void free_command(Command* cmd) {
     cmd->outfile = NULL;
 }
 
-// Parses a single command segment (no pipes) into a Command struct
 static int parse_command_segment(char* segment, Command* cmd) {
     init_command(cmd);
     int argc = 0;
@@ -122,13 +199,42 @@ static int parse_command_segment(char* segment, Command* cmd) {
     return argc;
 }
 
-int parse_and_execute_line(char* cmdline) {
-    if (cmdline == NULL) return 0;
+// Executes a single semicolon-delimited segment (which may contain '|' and/or trailing '&')
+static int execute_single_segment(char* segment) {
+    // Trim leading whitespace
+    while (*segment == ' ' || *segment == '\t') segment++;
+    size_t len = strlen(segment);
+    while (len > 0 && (segment[len - 1] == ' ' || segment[len - 1] == '\t' || segment[len - 1] == '\n')) {
+        segment[--len] = '\0';
+    }
+    if (len == 0) return 0;
 
-    char* padded = pad_operators(cmdline);
-    if (!padded) return -1;
+    // Save clean display string for jobs listing
+    char* raw_display = strdup(segment);
 
-    // Check if the command contains a pipe '|'
+    // Check for trailing '&' for background execution
+    int is_background = 0;
+    if (segment[len - 1] == '&') {
+        is_background = 1;
+        segment[--len] = '\0';
+        while (len > 0 && (segment[len - 1] == ' ' || segment[len - 1] == '\t')) {
+            segment[--len] = '\0';
+        }
+    }
+
+    if (len == 0) {
+        fprintf(stderr, "syntax error near unexpected token '&'\n");
+        free(raw_display);
+        return -1;
+    }
+
+    char* padded = pad_operators(segment);
+    if (!padded) {
+        free(raw_display);
+        return -1;
+    }
+
+    // Check if segment contains a pipe '|'
     char* pipe_pos = strchr(padded, '|');
     if (pipe_pos != NULL) {
         *pipe_pos = '\0';
@@ -146,32 +252,57 @@ int parse_and_execute_line(char* cmdline) {
             if (left_argc > 0) free_command(&left_cmd);
             if (right_argc > 0) free_command(&right_cmd);
             free(padded);
+            free(raw_display);
             return -1;
         }
 
-        int status = execute_pipe(&left_cmd, &right_cmd);
+        int status = execute_pipe(&left_cmd, &right_cmd, is_background, raw_display);
         free_command(&left_cmd);
         free_command(&right_cmd);
         free(padded);
+        free(raw_display);
         return status;
     }
 
-    // No pipe: parse single command
+    // Single command (no pipe)
     Command cmd;
     int argc = parse_command_segment(padded, &cmd);
     free(padded);
 
     if (argc <= 0) {
+        free(raw_display);
         return 0;
     }
 
+    cmd.background = is_background;
+
     int status = 0;
     if (!handle_builtin(cmd.args)) {
-        status = execute_single(&cmd);
+        status = execute_single(&cmd, raw_display);
     }
 
     free_command(&cmd);
+    free(raw_display);
     return status;
+}
+
+int parse_and_execute_line(char* cmdline) {
+    if (cmdline == NULL) return 0;
+
+    char* line_copy = strdup(cmdline);
+    if (!line_copy) return -1;
+
+    int last_status = 0;
+    char* saveptr = NULL;
+    char* segment = strtok_r(line_copy, ";", &saveptr);
+
+    while (segment != NULL) {
+        last_status = execute_single_segment(segment);
+        segment = strtok_r(NULL, ";", &saveptr);
+    }
+
+    free(line_copy);
+    return last_status;
 }
 
 int handle_builtin(char** arglist) {
@@ -182,6 +313,7 @@ int handle_builtin(char** arglist) {
     // 1. exit
     if (strcmp(arglist[0], "exit") == 0) {
         free_history();
+        free_jobs();
         clear_history();
         printf("Exiting shell...\n");
         exit(0);
@@ -207,7 +339,7 @@ int handle_builtin(char** arglist) {
         printf("  help            : Display this help message\n");
         printf("  history         : Display command history\n");
         printf("  !n              : Re-execute the n-th command from history\n");
-        printf("  jobs            : Display background jobs\n");
+        printf("  jobs            : Display active background jobs\n");
         return 1;
     }
 
@@ -217,9 +349,9 @@ int handle_builtin(char** arglist) {
         return 1;
     }
 
-    // 5. jobs (Placeholder for Feature-6)
+    // 5. jobs: Lists active background jobs after reaping completed ones
     if (strcmp(arglist[0], "jobs") == 0) {
-        printf("Job control not yet implemented.\n");
+        print_jobs();
         return 1;
     }
 

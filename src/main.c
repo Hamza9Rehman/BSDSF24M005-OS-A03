@@ -6,7 +6,15 @@ int main() {
     // Bind Tab key to Readline's default completion behavior
     rl_bind_key('\t', rl_complete);
 
-    while ((cmdline = readline(PROMPT)) != NULL) {
+    while (1) {
+        // Reap any finished background child processes before prompting
+        reap_zombies();
+
+        cmdline = readline(PROMPT);
+        if (cmdline == NULL) {
+            break; // Handle Ctrl+D
+        }
+
         char* trimmed = cmdline;
         while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
 
@@ -47,6 +55,7 @@ int main() {
     }
 
     free_history();
+    free_jobs();
     clear_history();
     printf("\nShell exited.\n");
     return 0;

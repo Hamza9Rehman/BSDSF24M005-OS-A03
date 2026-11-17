@@ -31,7 +31,7 @@ static void apply_redirections(Command* cmd) {
     }
 }
 
-int execute_single(Command* cmd) {
+int execute_single(Command* cmd, const char* raw_cmd) {
     if (cmd == NULL || cmd->args[0] == NULL) {
         return 0;
     }
@@ -49,12 +49,17 @@ int execute_single(Command* cmd) {
             perror(cmd->args[0]);
             exit(1);
         default: // Parent process
-            waitpid(cpid, &status, 0);
-            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            if (cmd->background) {
+                add_job(cpid, raw_cmd);
+                return 0;
+            } else {
+                waitpid(cpid, &status, 0);
+                return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
+            }
     }
 }
 
-int execute_pipe(Command* left, Command* right) {
+int execute_pipe(Command* left, Command* right, int background, const char* raw_cmd) {
     int pipefd[2];
     if (pipe(pipefd) < 0) {
         perror("pipe failed");
@@ -71,18 +76,14 @@ int execute_pipe(Command* left, Command* right) {
     }
 
     if (pid_left == 0) {
-        // Redirect stdout to pipe write end
         if (dup2(pipefd[1], STDOUT_FILENO) < 0) {
             perror("dup2 pipe write failed");
             exit(1);
         }
-        // Close both original pipe descriptors
         close(pipefd[0]);
         close(pipefd[1]);
 
-        // Apply any input redirection on left command (e.g., sort < file.txt | uniq)
         apply_redirections(left);
-
         execvp(left->args[0], left->args);
         perror(left->args[0]);
         exit(1);
@@ -99,26 +100,28 @@ int execute_pipe(Command* left, Command* right) {
     }
 
     if (pid_right == 0) {
-        // Redirect stdin to pipe read end
         if (dup2(pipefd[0], STDIN_FILENO) < 0) {
             perror("dup2 pipe read failed");
             exit(1);
         }
-        // Close both original pipe descriptors
         close(pipefd[0]);
         close(pipefd[1]);
 
-        // Apply any output redirection on right command (e.g., ls | grep .c > list.txt)
         apply_redirections(right);
-
         execvp(right->args[0], right->args);
         perror(right->args[0]);
         exit(1);
     }
 
-    // Parent must close BOTH pipe ends so the reader receives EOF when writer finishes
+    // Parent closes both pipe ends immediately
     close(pipefd[0]);
     close(pipefd[1]);
+
+    if (background) {
+        // Track the pipeline leader/reader PID in background jobs
+        add_job(pid_right, raw_cmd);
+        return 0;
+    }
 
     int status_left, status_right;
     waitpid(pid_left, &status_left, 0);
