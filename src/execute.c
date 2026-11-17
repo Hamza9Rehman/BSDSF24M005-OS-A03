@@ -1,20 +1,128 @@
 #include "shell.h"
 
-int execute(char* arglist[]) {
+// Helper called ONLY inside a child process before execvp()
+static void apply_redirections(Command* cmd) {
+    if (cmd->infile != NULL) {
+        int fd_in = open(cmd->infile, O_RDONLY);
+        if (fd_in < 0) {
+            perror(cmd->infile);
+            exit(1);
+        }
+        if (dup2(fd_in, STDIN_FILENO) < 0) {
+            perror("dup2 infile failed");
+            close(fd_in);
+            exit(1);
+        }
+        close(fd_in);
+    }
+
+    if (cmd->outfile != NULL) {
+        int fd_out = open(cmd->outfile, O_WRONLY | O_CREAT | O_TRUNC, 0644);
+        if (fd_out < 0) {
+            perror(cmd->outfile);
+            exit(1);
+        }
+        if (dup2(fd_out, STDOUT_FILENO) < 0) {
+            perror("dup2 outfile failed");
+            close(fd_out);
+            exit(1);
+        }
+        close(fd_out);
+    }
+}
+
+int execute_single(Command* cmd) {
+    if (cmd == NULL || cmd->args[0] == NULL) {
+        return 0;
+    }
+
     int status;
-    int cpid = fork();
+    pid_t cpid = fork();
 
     switch (cpid) {
         case -1:
             perror("fork failed");
-            exit(1);
+            return -1;
         case 0: // Child process
-            execvp(arglist[0], arglist);
-            perror("Command not found"); // This line runs only if execvp fails
+            apply_redirections(cmd);
+            execvp(cmd->args[0], cmd->args);
+            perror(cmd->args[0]);
             exit(1);
         default: // Parent process
             waitpid(cpid, &status, 0);
-            // printf("Child pid:%d exited with status %d\n", cpid, status >> 8);
-            return 0;
+            return WIFEXITED(status) ? WEXITSTATUS(status) : -1;
     }
+}
+
+int execute_pipe(Command* left, Command* right) {
+    int pipefd[2];
+    if (pipe(pipefd) < 0) {
+        perror("pipe failed");
+        return -1;
+    }
+
+    // Fork left child (writer)
+    pid_t pid_left = fork();
+    if (pid_left < 0) {
+        perror("fork failed");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        return -1;
+    }
+
+    if (pid_left == 0) {
+        // Redirect stdout to pipe write end
+        if (dup2(pipefd[1], STDOUT_FILENO) < 0) {
+            perror("dup2 pipe write failed");
+            exit(1);
+        }
+        // Close both original pipe descriptors
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        // Apply any input redirection on left command (e.g., sort < file.txt | uniq)
+        apply_redirections(left);
+
+        execvp(left->args[0], left->args);
+        perror(left->args[0]);
+        exit(1);
+    }
+
+    // Fork right child (reader)
+    pid_t pid_right = fork();
+    if (pid_right < 0) {
+        perror("fork failed");
+        close(pipefd[0]);
+        close(pipefd[1]);
+        waitpid(pid_left, NULL, 0);
+        return -1;
+    }
+
+    if (pid_right == 0) {
+        // Redirect stdin to pipe read end
+        if (dup2(pipefd[0], STDIN_FILENO) < 0) {
+            perror("dup2 pipe read failed");
+            exit(1);
+        }
+        // Close both original pipe descriptors
+        close(pipefd[0]);
+        close(pipefd[1]);
+
+        // Apply any output redirection on right command (e.g., ls | grep .c > list.txt)
+        apply_redirections(right);
+
+        execvp(right->args[0], right->args);
+        perror(right->args[0]);
+        exit(1);
+    }
+
+    // Parent must close BOTH pipe ends so the reader receives EOF when writer finishes
+    close(pipefd[0]);
+    close(pipefd[1]);
+
+    int status_left, status_right;
+    waitpid(pid_left, &status_left, 0);
+    waitpid(pid_right, &status_right, 0);
+
+    return WIFEXITED(status_right) ? WEXITSTATUS(status_right) : -1;
 }

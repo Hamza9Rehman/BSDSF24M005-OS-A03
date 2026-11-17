@@ -2,17 +2,15 @@
 
 int main() {
     char* cmdline;
-    char** arglist;
 
     // Bind Tab key to Readline's default completion behavior
     rl_bind_key('\t', rl_complete);
 
     while ((cmdline = readline(PROMPT)) != NULL) {
-        // Skip leading whitespace when checking for !n
         char* trimmed = cmdline;
         while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
 
-        // Handle !n re-execution before adding to history or tokenizing
+        // Handle !n re-execution before adding to history or parsing
         if (trimmed[0] == '!') {
             char* endptr;
             long n = strtol(trimmed + 1, &endptr, 10);
@@ -42,20 +40,9 @@ int main() {
         if (*trimmed != '\0') {
             add_history(cmdline);
             add_to_history(cmdline);
+            parse_and_execute_line(cmdline);
         }
 
-        if ((arglist = tokenize(cmdline)) != NULL) {
-            // Check built-ins first before forking an external process
-            if (!handle_builtin(arglist)) {
-                execute(arglist);
-            }
-
-            // Free the memory allocated by tokenize()
-            for (int i = 0; arglist[i] != NULL; i++) {
-                free(arglist[i]);
-            }
-            free(arglist);
-        }
         free(cmdline);
     }
 

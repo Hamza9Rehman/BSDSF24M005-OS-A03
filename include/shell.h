@@ -7,20 +7,28 @@
 #include <unistd.h>
 #include <sys/types.h>
 #include <sys/wait.h>
+#include <fcntl.h>
 #include <errno.h>
 #include <ctype.h>
 #include <readline/readline.h>
 #include <readline/history.h>
 
 #define MAX_LEN 512
-#define MAXARGS 10
-#define ARGLEN 30
+#define MAXARGS 32
 #define HISTORY_SIZE 20
 #define PROMPT "FCIT> "
 
+// Represents a single command with optional I/O redirections
+typedef struct {
+    char* args[MAXARGS + 1];
+    char* infile;
+    char* outfile;
+} Command;
+
 // Core shell prototypes
-char** tokenize(char* cmdline);
-int execute(char** arglist);
+int parse_and_execute_line(char* cmdline);
+int execute_single(Command* cmd);
+int execute_pipe(Command* left, Command* right);
 int handle_builtin(char** arglist);
 
 // History prototypes
