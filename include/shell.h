@@ -37,6 +37,13 @@ typedef struct {
     int active;
 } Job;
 
+// Linked-list node for shell variables
+typedef struct VarNode {
+    char* name;
+    char* value;
+    struct VarNode* next;
+} VarNode;
+
 // Core shell prototypes
 int parse_and_execute_line(char* cmdline);
 int execute_single(Command* cmd, const char* raw_cmd);
@@ -44,6 +51,12 @@ int execute_pipe(Command* left, Command* right, int background, const char* raw_
 int handle_builtin(char** arglist, int* exit_status);
 int is_if_statement(const char* line);
 int handle_if_block(const char* first_line);
+
+// Shell variable prototypes
+void set_shell_var(const char* name, const char* value);
+const char* get_shell_var(const char* name);
+void print_shell_vars(void);
+void free_shell_vars(void);
 
 // Job control prototypes
 void add_job(pid_t pid, const char* cmd);

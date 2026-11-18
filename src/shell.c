@@ -6,6 +6,129 @@ static int history_count = 0;
 static Job jobs_list[MAX_JOBS];
 static int next_job_id = 1;
 
+static VarNode* var_head = NULL;
+
+/* ==================== SHELL VARIABLES FUNCTIONS ==================== */
+
+void set_shell_var(const char* name, const char* value) {
+    if (name == NULL || value == NULL) return;
+
+    // Update existing variable if already defined
+    VarNode* curr = var_head;
+    while (curr != NULL) {
+        if (strcmp(curr->name, name) == 0) {
+            free(curr->value);
+            curr->value = strdup(value);
+            return;
+        }
+        curr = curr->next;
+    }
+
+    // Otherwise prepend a new variable node
+    VarNode* node = (VarNode*)malloc(sizeof(VarNode));
+    if (!node) return;
+    node->name = strdup(name);
+    node->value = strdup(value);
+    node->next = var_head;
+    var_head = node;
+}
+
+const char* get_shell_var(const char* name) {
+    if (name == NULL) return NULL;
+    VarNode* curr = var_head;
+    while (curr != NULL) {
+        if (strcmp(curr->name, name) == 0) {
+            return curr->value;
+        }
+        curr = curr->next;
+    }
+    return NULL;
+}
+
+void print_shell_vars(void) {
+    VarNode* curr = var_head;
+    if (curr == NULL) {
+        printf("No shell variables defined.\n");
+        return;
+    }
+    while (curr != NULL) {
+        printf("%s=%s\n", curr->name, curr->value);
+        curr = curr->next;
+    }
+}
+
+void free_shell_vars(void) {
+    VarNode* curr = var_head;
+    while (curr != NULL) {
+        VarNode* next = curr->next;
+        free(curr->name);
+        free(curr->value);
+        free(curr);
+        curr = next;
+    }
+    var_head = NULL;
+}
+
+// Checks if token is of form VARNAME=value (valid identifier before '=', no spaces around '=')
+static int try_handle_assignment(const char* token) {
+    if (token == NULL) return 0;
+
+    const char* eq = strchr(token, '=');
+    if (eq == NULL || eq == token) return 0;
+
+    // Validate variable name: must start with letter or '_', followed by alphanumeric or '_'
+    if (!isalpha((unsigned char)token[0]) && token[0] != '_') return 0;
+    for (const char* p = token + 1; p < eq; p++) {
+        if (!isalnum((unsigned char)*p) && *p != '_') return 0;
+    }
+
+    size_t name_len = (size_t)(eq - token);
+    char* name = (char*)malloc(name_len + 1);
+    if (!name) return 1;
+    strncpy(name, token, name_len);
+    name[name_len] = '\0';
+
+    const char* raw_val = eq + 1;
+    char* val = NULL;
+
+    // If the right-hand side starts with '$', expand it during assignment too (e.g., A=$B)
+    if (raw_val[0] == '$' && raw_val[1] != '\0') {
+        const char* looked_up = get_shell_var(raw_val + 1);
+        val = strdup(looked_up ? looked_up : "");
+    } else {
+        val = strdup(raw_val);
+    }
+
+    set_shell_var(name, val);
+    free(name);
+    free(val);
+    return 1;
+}
+
+// Expands any argument starting with '$' into its stored shell variable value
+static void expand_command_variables(Command* cmd) {
+    for (int i = 0; cmd->args[i] != NULL; i++) {
+        if (cmd->args[i][0] == '$' && cmd->args[i][1] != '\0') {
+            const char* var_name = cmd->args[i] + 1;
+            const char* val = get_shell_var(var_name);
+            free(cmd->args[i]);
+            cmd->args[i] = strdup(val != NULL ? val : "");
+        }
+    }
+
+    if (cmd->infile != NULL && cmd->infile[0] == '$' && cmd->infile[1] != '\0') {
+        const char* val = get_shell_var(cmd->infile + 1);
+        free(cmd->infile);
+        cmd->infile = strdup(val != NULL ? val : "");
+    }
+
+    if (cmd->outfile != NULL && cmd->outfile[0] == '$' && cmd->outfile[1] != '\0') {
+        const char* val = get_shell_var(cmd->outfile + 1);
+        free(cmd->outfile);
+        cmd->outfile = strdup(val != NULL ? val : "");
+    }
+}
+
 /* ==================== JOB CONTROL FUNCTIONS ==================== */
 
 void add_job(pid_t pid, const char* cmd) {
@@ -26,7 +149,6 @@ void reap_zombies(void) {
     int status;
     pid_t pid;
 
-    // Non-blocking loop to reap all terminated background children
     while ((pid = waitpid(-1, &status, WNOHANG)) > 0) {
         for (int i = 0; i < MAX_JOBS; i++) {
             if (jobs_list[i].active && jobs_list[i].pid == pid) {
@@ -144,7 +266,6 @@ int handle_if_block(const char* first_line) {
     if (!copy) return -1;
 
     char* p = trim_whitespace(copy);
-    // Advance past "if"
     p += 2;
     p = trim_whitespace(p);
 
@@ -162,7 +283,6 @@ int handle_if_block(const char* first_line) {
     int then_count = 0;
     int else_count = 0;
 
-    // State: 0 = expecting 'then', 1 = inside 'then' block, 2 = inside 'else' block
     int state = 0;
     int syntax_ok = 0;
 
@@ -208,7 +328,6 @@ int handle_if_block(const char* first_line) {
             break;
         }
 
-        // Ignore blank lines inside blocks
         if (*trimmed == '\0') {
             free(next_line);
             continue;
@@ -237,16 +356,13 @@ int handle_if_block(const char* first_line) {
 
     int final_status = 0;
     if (syntax_ok) {
-        // Execute the condition command and inspect its exit status
         int cond_status = parse_and_execute_line(cond_cmd);
 
         if (cond_status == 0) {
-            // Condition succeeded (exit code 0) -> run 'then' block
             for (int i = 0; i < then_count; i++) {
                 final_status = parse_and_execute_line(then_cmds[i]);
             }
         } else {
-            // Condition failed (non-zero exit code) -> run 'else' block (if present)
             for (int i = 0; i < else_count; i++) {
                 final_status = parse_and_execute_line(else_cmds[i]);
             }
@@ -255,7 +371,6 @@ int handle_if_block(const char* first_line) {
         final_status = -1;
     }
 
-    // Free allocated block memory
     free(cond_cmd);
     for (int i = 0; i < then_count; i++) free(then_cmds[i]);
     for (int i = 0; i < else_count; i++) free(else_cmds[i]);
@@ -265,23 +380,69 @@ int handle_if_block(const char* first_line) {
 
 /* ==================== PARSING & EXECUTION ==================== */
 
+// Pads '<', '>', and '|' outside of quotes so quoted strings remain untouched
 static char* pad_operators(const char* line) {
     size_t len = strlen(line);
     char* padded = (char*)malloc(len * 3 + 1);
     if (!padded) return NULL;
 
     size_t j = 0;
+    char quote = '\0';
     for (size_t i = 0; i < len; i++) {
-        if (line[i] == '<' || line[i] == '>' || line[i] == '|') {
+        char c = line[i];
+        if (quote == '\0' && (c == '"' || c == '\'')) {
+            quote = c;
+            padded[j++] = c;
+        } else if (quote != '\0' && c == quote) {
+            quote = '\0';
+            padded[j++] = c;
+        } else if (quote == '\0' && (c == '<' || c == '>' || c == '|')) {
             padded[j++] = ' ';
-            padded[j++] = line[i];
+            padded[j++] = c;
             padded[j++] = ' ';
         } else {
-            padded[j++] = line[i];
+            padded[j++] = c;
         }
     }
     padded[j] = '\0';
     return padded;
+}
+
+// Quote-aware tokenizer that preserves spaces inside "..." or '...' and strips outer quotes
+static char* next_token(char** cursor) {
+    char* p = *cursor;
+    while (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') p++;
+    if (*p == '\0') {
+        *cursor = p;
+        return NULL;
+    }
+
+    char* buf = (char*)malloc(strlen(p) + 1);
+    if (!buf) return NULL;
+
+    size_t j = 0;
+    char quote = '\0';
+    while (*p != '\0') {
+        if (quote == '\0') {
+            if (*p == ' ' || *p == '\t' || *p == '\r' || *p == '\n') {
+                break;
+            } else if (*p == '"' || *p == '\'') {
+                quote = *p++;
+            } else {
+                buf[j++] = *p++;
+            }
+        } else {
+            if (*p == quote) {
+                quote = '\0';
+                p++;
+            } else {
+                buf[j++] = *p++;
+            }
+        }
+    }
+    buf[j] = '\0';
+    *cursor = p;
+    return buf;
 }
 
 static void init_command(Command* cmd) {
@@ -307,34 +468,38 @@ static void free_command(Command* cmd) {
 static int parse_command_segment(char* segment, Command* cmd) {
     init_command(cmd);
     int argc = 0;
-    char* saveptr = NULL;
-    char* tok = strtok_r(segment, " \t\r\n", &saveptr);
+    char* cursor = segment;
+    char* tok = next_token(&cursor);
 
     while (tok != NULL) {
         if (strcmp(tok, "<") == 0) {
-            tok = strtok_r(NULL, " \t\r\n", &saveptr);
+            free(tok);
+            tok = next_token(&cursor);
             if (tok == NULL) {
                 fprintf(stderr, "syntax error: expected filename after '<'\n");
                 free_command(cmd);
                 return -1;
             }
             free(cmd->infile);
-            cmd->infile = strdup(tok);
+            cmd->infile = tok;
         } else if (strcmp(tok, ">") == 0) {
-            tok = strtok_r(NULL, " \t\r\n", &saveptr);
+            free(tok);
+            tok = next_token(&cursor);
             if (tok == NULL) {
                 fprintf(stderr, "syntax error: expected filename after '>'\n");
                 free_command(cmd);
                 return -1;
             }
             free(cmd->outfile);
-            cmd->outfile = strdup(tok);
+            cmd->outfile = tok;
         } else {
             if (argc < MAXARGS) {
-                cmd->args[argc++] = strdup(tok);
+                cmd->args[argc++] = tok;
+            } else {
+                free(tok);
             }
         }
-        tok = strtok_r(NULL, " \t\r\n", &saveptr);
+        tok = next_token(&cursor);
     }
 
     cmd->args[argc] = NULL;
@@ -372,7 +537,18 @@ static int execute_single_segment(char* segment) {
         return -1;
     }
 
-    char* pipe_pos = strchr(padded, '|');
+    // Check if segment contains a pipe '|' outside quotes
+    char* pipe_pos = NULL;
+    char quote = '\0';
+    for (char* p = padded; *p != '\0'; p++) {
+        if (quote == '\0' && (*p == '"' || *p == '\'')) quote = *p;
+        else if (quote != '\0' && *p == quote) quote = '\0';
+        else if (quote == '\0' && *p == '|') {
+            pipe_pos = p;
+            break;
+        }
+    }
+
     if (pipe_pos != NULL) {
         *pipe_pos = '\0';
         char* left_str = padded;
@@ -393,6 +569,9 @@ static int execute_single_segment(char* segment) {
             return -1;
         }
 
+        expand_command_variables(&left_cmd);
+        expand_command_variables(&right_cmd);
+
         int status = execute_pipe(&left_cmd, &right_cmd, is_background, raw_display);
         free_command(&left_cmd);
         free_command(&right_cmd);
@@ -409,6 +588,16 @@ static int execute_single_segment(char* segment) {
         free(raw_display);
         return 0;
     }
+
+    // Check for standalone variable assignment (e.g., MESSAGE="Hello, World!")
+    if (argc == 1 && try_handle_assignment(cmd.args[0])) {
+        free_command(&cmd);
+        free(raw_display);
+        return 0;
+    }
+
+    // Expand $VARNAME arguments before built-in or external execution
+    expand_command_variables(&cmd);
 
     cmd.background = is_background;
 
@@ -450,6 +639,7 @@ int handle_builtin(char** arglist, int* exit_status) {
     if (strcmp(arglist[0], "exit") == 0) {
         free_history();
         free_jobs();
+        free_shell_vars();
         clear_history();
         printf("Exiting shell...\n");
         exit(0);
@@ -480,6 +670,7 @@ int handle_builtin(char** arglist, int* exit_status) {
         printf("  history         : Display command history\n");
         printf("  !n              : Re-execute the n-th command from history\n");
         printf("  jobs            : Display active background jobs\n");
+        printf("  set             : Display all defined shell variables\n");
         if (exit_status) *exit_status = 0;
         return 1;
     }
@@ -494,6 +685,13 @@ int handle_builtin(char** arglist, int* exit_status) {
     // 5. jobs
     if (strcmp(arglist[0], "jobs") == 0) {
         print_jobs();
+        if (exit_status) *exit_status = 0;
+        return 1;
+    }
+
+    // 6. set: Displays all shell variables
+    if (strcmp(arglist[0], "set") == 0) {
+        print_shell_vars();
         if (exit_status) *exit_status = 0;
         return 1;
     }

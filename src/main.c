@@ -61,6 +61,7 @@ int main() {
 
     free_history();
     free_jobs();
+    free_shell_vars();
     clear_history();
     printf("\nShell exited.\n");
     return 0;
