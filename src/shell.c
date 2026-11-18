@@ -39,7 +39,6 @@ void reap_zombies(void) {
         }
     }
 
-    // Reset job ID counter if no active background jobs remain
     int any_active = 0;
     for (int i = 0; i < MAX_JOBS; i++) {
         if (jobs_list[i].active) {
@@ -121,6 +120,149 @@ void free_history(void) {
     history_count = 0;
 }
 
+/* ==================== IF-THEN-ELSE-FI CONTROL STRUCTURE ==================== */
+
+static char* trim_whitespace(char* str) {
+    while (*str == ' ' || *str == '\t' || *str == '\r' || *str == '\n') str++;
+    size_t len = strlen(str);
+    while (len > 0 && (str[len - 1] == ' ' || str[len - 1] == '\t' ||
+                       str[len - 1] == '\r' || str[len - 1] == '\n')) {
+        str[--len] = '\0';
+    }
+    return str;
+}
+
+int is_if_statement(const char* line) {
+    if (line == NULL) return 0;
+    while (*line == ' ' || *line == '\t') line++;
+    return (strncmp(line, "if", 2) == 0 &&
+            (line[2] == ' ' || line[2] == '\t' || line[2] == '\0'));
+}
+
+int handle_if_block(const char* first_line) {
+    char* copy = strdup(first_line);
+    if (!copy) return -1;
+
+    char* p = trim_whitespace(copy);
+    // Advance past "if"
+    p += 2;
+    p = trim_whitespace(p);
+
+    if (*p == '\0') {
+        fprintf(stderr, "syntax error: expected condition command after 'if'\n");
+        free(copy);
+        return -1;
+    }
+
+    char* cond_cmd = strdup(p);
+    free(copy);
+
+    char* then_cmds[MAX_BLOCK_LINES];
+    char* else_cmds[MAX_BLOCK_LINES];
+    int then_count = 0;
+    int else_count = 0;
+
+    // State: 0 = expecting 'then', 1 = inside 'then' block, 2 = inside 'else' block
+    int state = 0;
+    int syntax_ok = 0;
+
+    while (1) {
+        char* next_line = readline(SUB_PROMPT);
+        if (next_line == NULL) {
+            fprintf(stderr, "syntax error: unexpected EOF while looking for matching 'fi'\n");
+            break;
+        }
+
+        char* trimmed = trim_whitespace(next_line);
+
+        if (strcmp(trimmed, "then") == 0) {
+            if (state != 0) {
+                fprintf(stderr, "syntax error: unexpected 'then'\n");
+                free(next_line);
+                break;
+            }
+            state = 1;
+            free(next_line);
+            continue;
+        }
+
+        if (strcmp(trimmed, "else") == 0) {
+            if (state != 1) {
+                fprintf(stderr, "syntax error: unexpected 'else'\n");
+                free(next_line);
+                break;
+            }
+            state = 2;
+            free(next_line);
+            continue;
+        }
+
+        if (strcmp(trimmed, "fi") == 0) {
+            if (state == 0) {
+                fprintf(stderr, "syntax error: 'fi' encountered before 'then'\n");
+                free(next_line);
+                break;
+            }
+            syntax_ok = 1;
+            free(next_line);
+            break;
+        }
+
+        // Ignore blank lines inside blocks
+        if (*trimmed == '\0') {
+            free(next_line);
+            continue;
+        }
+
+        if (state == 0) {
+            fprintf(stderr, "syntax error: expected 'then', got '%s'\n", trimmed);
+            free(next_line);
+            break;
+        } else if (state == 1) {
+            if (then_count < MAX_BLOCK_LINES) {
+                then_cmds[then_count++] = strdup(trimmed);
+            } else {
+                fprintf(stderr, "error: maximum lines exceeded in 'then' block\n");
+            }
+        } else if (state == 2) {
+            if (else_count < MAX_BLOCK_LINES) {
+                else_cmds[else_count++] = strdup(trimmed);
+            } else {
+                fprintf(stderr, "error: maximum lines exceeded in 'else' block\n");
+            }
+        }
+
+        free(next_line);
+    }
+
+    int final_status = 0;
+    if (syntax_ok) {
+        // Execute the condition command and inspect its exit status
+        int cond_status = parse_and_execute_line(cond_cmd);
+
+        if (cond_status == 0) {
+            // Condition succeeded (exit code 0) -> run 'then' block
+            for (int i = 0; i < then_count; i++) {
+                final_status = parse_and_execute_line(then_cmds[i]);
+            }
+        } else {
+            // Condition failed (non-zero exit code) -> run 'else' block (if present)
+            for (int i = 0; i < else_count; i++) {
+                final_status = parse_and_execute_line(else_cmds[i]);
+            }
+        }
+    } else {
+        final_status = -1;
+    }
+
+    // Free allocated block memory
+    free(cond_cmd);
+    for (int i = 0; i < then_count; i++) free(then_cmds[i]);
+    for (int i = 0; i < else_count; i++) free(else_cmds[i]);
+
+    return final_status;
+}
+
 /* ==================== PARSING & EXECUTION ==================== */
 
 static char* pad_operators(const char* line) {
@@ -199,9 +341,7 @@ static int parse_command_segment(char* segment, Command* cmd) {
     return argc;
 }
 
-// Executes a single semicolon-delimited segment (which may contain '|' and/or trailing '&')
 static int execute_single_segment(char* segment) {
-    // Trim leading whitespace
     while (*segment == ' ' || *segment == '\t') segment++;
     size_t len = strlen(segment);
     while (len > 0 && (segment[len - 1] == ' ' || segment[len - 1] == '\t' || segment[len - 1] == '\n')) {
@@ -209,10 +349,8 @@ static int execute_single_segment(char* segment) {
     }
     if (len == 0) return 0;
 
-    // Save clean display string for jobs listing
     char* raw_display = strdup(segment);
 
-    // Check for trailing '&' for background execution
     int is_background = 0;
     if (segment[len - 1] == '&') {
         is_background = 1;
@@ -234,7 +372,6 @@ static int execute_single_segment(char* segment) {
         return -1;
     }
 
-    // Check if segment contains a pipe '|'
     char* pipe_pos = strchr(padded, '|');
     if (pipe_pos != NULL) {
         *pipe_pos = '\0';
@@ -264,7 +401,6 @@ static int execute_single_segment(char* segment) {
         return status;
     }
 
-    // Single command (no pipe)
     Command cmd;
     int argc = parse_command_segment(padded, &cmd);
     free(padded);
@@ -277,7 +413,7 @@ static int execute_single_segment(char* segment) {
     cmd.background = is_background;
 
     int status = 0;
-    if (!handle_builtin(cmd.args)) {
+    if (!handle_builtin(cmd.args, &status)) {
         status = execute_single(&cmd, raw_display);
     }
 
@@ -305,7 +441,7 @@ int parse_and_execute_line(char* cmdline) {
     return last_status;
 }
 
-int handle_builtin(char** arglist) {
+int handle_builtin(char** arglist, int* exit_status) {
     if (arglist == NULL || arglist[0] == NULL) {
         return 0;
     }
@@ -323,9 +459,13 @@ int handle_builtin(char** arglist) {
     if (strcmp(arglist[0], "cd") == 0) {
         if (arglist[1] == NULL) {
             fprintf(stderr, "cd: expected argument to \"cd\"\n");
+            if (exit_status) *exit_status = 1;
         } else {
             if (chdir(arglist[1]) != 0) {
                 perror("cd failed");
+                if (exit_status) *exit_status = 1;
+            } else {
+                if (exit_status) *exit_status = 0;
             }
         }
         return 1;
@@ -340,18 +480,21 @@ int handle_builtin(char** arglist) {
         printf("  history         : Display command history\n");
         printf("  !n              : Re-execute the n-th command from history\n");
         printf("  jobs            : Display active background jobs\n");
+        if (exit_status) *exit_status = 0;
         return 1;
     }
 
     // 4. history
     if (strcmp(arglist[0], "history") == 0) {
         print_history();
+        if (exit_status) *exit_status = 0;
         return 1;
     }
 
-    // 5. jobs: Lists active background jobs after reaping completed ones
+    // 5. jobs
     if (strcmp(arglist[0], "jobs") == 0) {
         print_jobs();
+        if (exit_status) *exit_status = 0;
         return 1;
     }
 

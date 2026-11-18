@@ -44,11 +44,16 @@ int main() {
             while (*trimmed == ' ' || *trimmed == '\t') trimmed++;
         }
 
-        // Record non-empty command in both Readline history and internal history
+        // Record non-empty command and execute
         if (*trimmed != '\0') {
             add_history(cmdline);
             add_to_history(cmdline);
-            parse_and_execute_line(cmdline);
+
+            if (is_if_statement(trimmed)) {
+                handle_if_block(trimmed);
+            } else {
+                parse_and_execute_line(cmdline);
+            }
         }
 
         free(cmdline);

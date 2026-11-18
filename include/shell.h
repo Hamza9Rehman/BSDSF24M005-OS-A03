@@ -17,7 +17,9 @@
 #define MAXARGS 32
 #define HISTORY_SIZE 20
 #define MAX_JOBS 64
+#define MAX_BLOCK_LINES 32
 #define PROMPT "FCIT> "
+#define SUB_PROMPT "> "
 
 // Represents a single command with optional I/O redirections and background flag
 typedef struct {
@@ -39,7 +41,9 @@ typedef struct {
 int parse_and_execute_line(char* cmdline);
 int execute_single(Command* cmd, const char* raw_cmd);
 int execute_pipe(Command* left, Command* right, int background, const char* raw_cmd);
-int handle_builtin(char** arglist);
+int handle_builtin(char** arglist, int* exit_status);
+int is_if_statement(const char* line);
+int handle_if_block(const char* first_line);
 
 // Job control prototypes
 void add_job(pid_t pid, const char* cmd);
